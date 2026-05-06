@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "esbuild main.jsx --bundle --outfile=brandboard-app-20260505-2252.js --format=iife --jsx=automatic --define:process.env.NODE_ENV=\\\"production\\\"",
-    "dev": "vite --host 0.0.0.0 --port 8080"
+    "dev": "vite --host 0.0.0.0 --port 8080",
+    "build": "vite build",
+    "preview": "vite preview"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
@@ -13,10 +14,5 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "vite": "^6.0.0"
-  }
-}
-{
-  "scripts": {
-    "build": "[my-framework] build --output public"
   }
 }
