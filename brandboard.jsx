@@ -13,6 +13,7 @@ import {
   Circle,
   Heart,
   ImageSquare,
+  LinkSimple,
   MagnifyingGlass,
   Microphone,
   Moon,
@@ -351,7 +352,7 @@ function CommentsPanel({ comments, value, onChange, onSubmit, disabled }) {
                   <strong>{comment.author}</strong>
                   <span>{ago(comment.createdAt)}</span>
                 </div>
-                <p>{comment.body}</p>
+                <p><Linkify text={comment.body} /></p>
               </div>
             </div>
           ))}
@@ -431,7 +432,7 @@ function NoteCard({ note, isRead, isOwn, isLiked, likeCount, isDeleting, onClick
     return (
       <div style={{
         background: "var(--surface)", border: "1px solid var(--accent)",
-        borderRadius: 12, padding: "24px 22px", breakInside: "avoid", marginBottom: 14,
+        borderRadius: 12, padding: "24px 22px", height: "100%",
         display: "flex", flexDirection: "column", alignItems: "center",
         justifyContent: "center", gap: 14, minHeight: 120,
         boxShadow: "0 18px 54px rgba(0,0,0,0.20)",
@@ -468,7 +469,8 @@ function NoteCard({ note, isRead, isOwn, isLiked, likeCount, isDeleting, onClick
         transform: hov ? "translateY(-1px)" : "none",
         boxShadow: hov ? "0 8px 18px rgba(0,0,0,0.08)"
                        : unread ? "inset 0 0 0 1px var(--accent-glow)" : "none",
-        breakInside: "avoid", marginBottom: 14, position: "relative",
+        position: "relative", height: "100%",
+        display: "flex", flexDirection: "column",
         animation: `cardIn 0.3s ease ${(idx || 0) * 0.04}s both`,
       }}
     >
@@ -507,24 +509,28 @@ function NoteCard({ note, isRead, isOwn, isLiked, likeCount, isDeleting, onClick
           lineHeight: 1.58, margin: "0 0 14px",
           display: "-webkit-box", WebkitLineClamp: 3,
           WebkitBoxOrient: "vertical", overflow: "hidden",
-        }}>{note.body}</p>
+        }}><Linkify text={note.body} /></p>
       )}
 
       <AttachmentStrip attachments={note.attachments} />
       <CommentSummary comments={comments} />
 
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-          <div style={{
-            width: 20, height: 20, borderRadius: "50%",
-            background: note.authorColor || "var(--accent)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 8, fontWeight: 700, color: "#0e0e13",
-            fontFamily: MONO, flexShrink: 0,
-          }}>{note.author?.charAt(0).toUpperCase()}</div>
-          <span style={{ fontFamily: MONO, fontSize: 11, color: "var(--muted)", fontWeight: 500 }}>{note.author}</span>
-          <span style={{ fontFamily: MONO, fontSize: 10, color: "var(--dim)" }}>· {ago(note.createdAt)}</span>
-        </div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "auto" }}>
+        {note.isTemplate ? (
+          <span className="example-pill" title="Example idea — no author">Example</span>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+            <div style={{
+              width: 20, height: 20, borderRadius: "50%",
+              background: note.authorColor || "var(--accent)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 8, fontWeight: 700, color: "#0e0e13",
+              fontFamily: MONO, flexShrink: 0,
+            }}>{note.author?.charAt(0).toUpperCase()}</div>
+            <span style={{ fontFamily: MONO, fontSize: 11, color: "var(--muted)", fontWeight: 500 }}>{note.author}</span>
+            <span style={{ fontFamily: MONO, fontSize: 10, color: "var(--dim)" }}>· {ago(note.createdAt)}</span>
+          </div>
+        )}
 
         <div className="card-actions" onClick={e => e.stopPropagation()}>
           <button
@@ -553,6 +559,29 @@ function NoteCard({ note, isRead, isOwn, isLiked, likeCount, isDeleting, onClick
   );
 }
 
+
+// ─── Inline link rendering for note bodies / comments ────────────────────────
+const LINK_RE = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>()]+[^\s.,!?<>()])/g;
+function Linkify({ text }) {
+  if (!text) return null;
+  const out = [];
+  let last = 0, k = 0, m;
+  LINK_RE.lastIndex = 0;
+  while ((m = LINK_RE.exec(text)) !== null) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const label = m[1] ? m[1] : m[3];
+    const href  = m[1] ? m[2] : m[3];
+    out.push(
+      <a key={`l${k++}`} className="note-link" href={href} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>
+        {label}
+      </a>
+    );
+    last = LINK_RE.lastIndex;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return <>{out}</>;
+}
+
 // ─── NewNoteModal (combined — single screen) ──────────────────────────────────
 function NewNoteModal({ onClose, onSave, identity, initialNote, mode = "create" }) {
   const [title, setTitle] = useState(initialNote?.title || "");
@@ -565,7 +594,9 @@ function NewNoteModal({ onClose, onSave, identity, initialNote, mode = "create" 
   const [liveTranscript, setLiveTranscript] = useState("");
   const [recError, setRecError] = useState("");
   const ref = useRef(null);
+  const bodyRef = useRef(null);
   const fileRef = useRef(null);
+  const [isDragging, setIsDragging] = useState(false);
   const recorderRef = useRef(null);
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
@@ -583,10 +614,10 @@ function NewNoteModal({ onClose, onSave, identity, initialNote, mode = "create" 
   }, []);
   const canSave = title.trim().length > 0 || body.trim().length > 0 || attachments.length > 0;
 
-  const addImages = async e => {
+  const addFiles = async fileList => {
     const existingCount = attachments.filter(a => a.type === "image").length;
-    const files = [...(e.target.files || [])]
-      .filter(f => f.type.startsWith("image/"))
+    const files = [...(fileList || [])]
+      .filter(f => f && f.type && f.type.startsWith("image/"))
       .slice(0, Math.max(0, 10 - existingCount));
     if (!files.length) return;
     const createdAt = new Date().toISOString();
@@ -601,7 +632,48 @@ function NewNoteModal({ onClose, onSave, identity, initialNote, mode = "create" 
       };
     }));
     setAttachments(p => [...p, ...items]);
+  };
+  const addImages = async e => {
+    await addFiles(e.target.files);
     e.target.value = "";
+  };
+  const onDragOver = e => {
+    if (![...(e.dataTransfer?.types || [])].includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    setIsDragging(true);
+  };
+  const onDragLeave = e => {
+    if (e.currentTarget.contains(e.relatedTarget)) return;
+    setIsDragging(false);
+  };
+  const onDrop = async e => {
+    e.preventDefault();
+    setIsDragging(false);
+    const files = e.dataTransfer?.files;
+    if (files?.length) await addFiles(files);
+  };
+  const addLink = () => {
+    const ta = bodyRef.current;
+    if (!ta) return;
+    const start = ta.selectionStart ?? body.length;
+    const end   = ta.selectionEnd   ?? body.length;
+    const selected = body.slice(start, end);
+    let url = window.prompt(selected ? `Add link for "${selected.slice(0, 40)}${selected.length > 40 ? "…" : ""}"` : "Paste a URL", "https://");
+    if (!url) return;
+    url = url.trim();
+    if (!/^https?:\/\//i.test(url)) url = "https://" + url.replace(/^\/+/, "");
+    let label = selected.trim();
+    if (!label) {
+      label = window.prompt("Link text (optional)", url) || url;
+    }
+    const replacement = `[${label}](${url})`;
+    const next = body.slice(0, start) + replacement + body.slice(end);
+    setBody(next);
+    requestAnimationFrame(() => {
+      const pos = start + replacement.length;
+      try { ta.focus(); ta.setSelectionRange(pos, pos); } catch {}
+    });
   };
 
   const removeAttachment = id => setAttachments(p => p.filter(a => a.id !== id));
@@ -744,18 +816,29 @@ function NewNoteModal({ onClose, onSave, identity, initialNote, mode = "create" 
 
         {/* Body */}
         <textarea
+          ref={bodyRef}
           className="m-ta" rows={4}
           placeholder="Describe it… optional, but future-you will thank present-you"
           value={body} onChange={e => setBody(e.target.value)}
         />
 
         {/* Attachments */}
-        <div className="att-box">
+        <div
+          className={`att-box${isDragging ? " is-dragging" : ""}`}
+          onDragOver={onDragOver}
+          onDragEnter={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+        >
           <input ref={fileRef} type="file" accept="image/*" multiple onChange={addImages} style={{ display: "none" }} />
           <div className="att-actions">
-            <button className="attach-plus" onClick={() => fileRef.current?.click()} type="button" aria-label="Add image" title="Add image">
+            <button className="attach-plus" onClick={() => fileRef.current?.click()} type="button" aria-label="Add image" title="Add image (or drag & drop)">
               <ImageSquare size={20} weight="bold" />
               <span>Add image</span>
+            </button>
+            <button className="attach-link" onClick={addLink} type="button" aria-label="Add link" title="Add link to selection">
+              <LinkSimple size={18} weight="bold" />
+              <span>Add link</span>
             </button>
             {!isRecording ? (
               <button className="voice-trigger" onClick={startRecording} type="button" aria-label="Record voice message" title="Record voice message">
@@ -776,6 +859,7 @@ function NewNoteModal({ onClose, onSave, identity, initialNote, mode = "create" 
               </div>
             )}
           </div>
+          <div className="att-drop-hint" aria-hidden="true">Drop images to attach</div>
           {(liveTranscript || recError || attachments.length > 0) && (
             <div className="att-workspace">
               {liveTranscript && <p className="att-transcript">{liveTranscript}</p>}
@@ -855,16 +939,20 @@ function IdeaDetailPage({ note, isOwn, isLiked, likeCount, onBack, onLike, onAdd
           <h1>{note.title || "Untitled"}</h1>
           <TagPill tag={note.tag || "Other"} sm />
         </div>
-        {note.body && <p className="idea-page-body">{note.body}</p>}
+        {note.body && <p className="idea-page-body"><Linkify text={note.body} /></p>}
         <AttachmentDetailList attachments={note.attachments} />
         <div className="idea-page-meta">
-          <div className="idea-page-author">
-            <UserAvatar name={note.author} color={note.authorColor} size={34} />
-            <div>
-              <div>{note.author}</div>
-              <span>{fd(note.createdAt)} at {ft(note.createdAt)}</span>
+          {note.isTemplate ? (
+            <span className="example-pill" title="Example idea — no author">Example idea</span>
+          ) : (
+            <div className="idea-page-author">
+              <UserAvatar name={note.author} color={note.authorColor} size={34} />
+              <div>
+                <div>{note.author}</div>
+                <span>{fd(note.createdAt)} at {ft(note.createdAt)}</span>
+              </div>
             </div>
-          </div>
+          )}
           <button
             onClick={onLike}
             className={`detail-like${isLiked ? " liked" : ""}`}
@@ -1233,7 +1321,7 @@ button { -webkit-tap-highlight-color:transparent; }
 .feed-filter-trigger.open svg { transform:rotate(180deg); }
 .feed-filter-menu {
   position:absolute; top:calc(100% + 8px); right:0; width:max-content; min-width:100%; z-index:85;
-  background:#fff; border:1px solid var(--border); border-radius:12px;
+  background:var(--surface); border:1px solid var(--border); border-radius:12px;
   padding:6px; box-shadow:0 18px 50px rgba(0,0,0,0.18);
   animation:slideUp 0.16s ease;
 }
@@ -1255,7 +1343,7 @@ button { -webkit-tap-highlight-color:transparent; }
 }
 .date-scrim { display:none; }
 .date-popover {
-  width:294px; background:#fff; border:1px solid var(--border);
+  width:294px; background:var(--surface); border:1px solid var(--border);
   border-radius:14px; padding:14px; box-shadow:0 22px 58px rgba(0,0,0,0.22);
   animation:slideUp 0.18s ease;
 }
@@ -1266,7 +1354,7 @@ button { -webkit-tap-highlight-color:transparent; }
 .date-nav { display:flex; align-items:center; gap:6px; }
 .date-nav button {
   width:30px; height:30px; border-radius:8px; border:1px solid var(--border);
-  background:#fff; color:var(--muted); cursor:pointer;
+  background:transparent; color:var(--muted); cursor:pointer;
   display:flex; align-items:center; justify-content:center;
 }
 .date-nav button:hover { color:var(--text); border-color:var(--muted); }
@@ -1367,7 +1455,7 @@ button { -webkit-tap-highlight-color:transparent; }
 }
 .back-btn:hover { color:var(--text); }
 .idea-page-card {
-  background:#fff; border:1px solid var(--border); border-radius:14px;
+  background:var(--surface); border:1px solid var(--border); border-radius:14px;
   padding:26px; box-shadow:none;
 }
 .idea-page-topline {
@@ -1410,7 +1498,7 @@ button { -webkit-tap-highlight-color:transparent; }
 .comment-list { display:flex; flex-direction:column; gap:14px; margin-bottom:14px; }
 .comment-item { display:grid; grid-template-columns:30px minmax(0,1fr); gap:10px; align-items:start; }
 .comment-body {
-  background:#fff; border:0; border-bottom:1px solid var(--border); border-radius:0;
+  background:transparent; border:0; border-bottom:1px solid var(--border); border-radius:0;
   padding:0 0 10px; min-width:0;
 }
 .comment-meta { display:flex; align-items:center; gap:8px; margin-bottom:4px; min-width:0; }
@@ -1428,9 +1516,9 @@ button { -webkit-tap-highlight-color:transparent; }
 .comment-form textarea:focus { border-color:var(--accent); background:transparent; }
 .comment-form textarea::placeholder { color:var(--dim); }
 
-.grid { column-count:3; column-gap:14px; }
-@media (max-width:980px) { .grid { column-count:2; } }
-@media (max-width:640px) { .grid { column-count:1; } }
+.grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; grid-auto-rows:1fr; align-items:stretch; }
+@media (max-width:980px) { .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:640px) { .grid { grid-template-columns:1fr; } }
 
 .empty {
   text-align:left; padding:24px; border:1px solid var(--border);
@@ -1446,7 +1534,7 @@ button { -webkit-tap-highlight-color:transparent; }
 .template-intro h2 { font-size:18px; line-height:1.2; font-weight:500; color:var(--text); margin-bottom:4px; }
 .template-intro p { font-size:13px; color:var(--muted); }
 .template-meta { font-size:13px; color:var(--dim); margin:0 0 14px; }
-.template-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+.template-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; grid-auto-rows:1fr; align-items:stretch; }
 .template-card {
   min-height:170px; text-align:left; display:flex; flex-direction:column; align-items:flex-start; gap:11px;
   border:1px solid var(--border); border-radius:10px; background:var(--input-bg);
@@ -1473,7 +1561,7 @@ button { -webkit-tap-highlight-color:transparent; }
   z-index:200; padding:24px; backdrop-filter:blur(12px);
 }
 .m-box {
-  background:#fff;
+  background:var(--surface);
   border:1px solid color-mix(in srgb,var(--border) 86%,transparent);
   border-radius:16px; padding:26px; width:100%;
   box-shadow:0 34px 90px rgba(0,0,0,0.22);
@@ -1530,7 +1618,7 @@ button { -webkit-tap-highlight-color:transparent; }
 .img-collage.count-5 .img-cell:nth-child(3) { grid-column:3; }
 .img-collage.count-5 .img-cell:nth-child(4) { grid-column:2; grid-row:2; }
 .img-collage.count-5 .img-cell:nth-child(5) { grid-column:3; grid-row:2; }
-.img-cell { min-width:0; min-height:0; position:relative; background:#111; }
+.img-cell { min-width:0; min-height:0; position:relative; background:var(--sh); }
 .img-cell img { width:100%; height:100%; object-fit:cover; display:block; }
 .img-extra {
   position:absolute; inset:0; background:rgba(0,0,0,0.46); color:#fff;
@@ -1746,7 +1834,7 @@ button { -webkit-tap-highlight-color:transparent; }
 .account-wrap { position:relative; }
 .account-menu {
   position:absolute; top:42px; right:0; width:300px; z-index:80;
-  background:#fff; border:1px solid var(--border); border-radius:12px;
+  background:var(--surface); border:1px solid var(--border); border-radius:12px;
   padding:10px; box-shadow:0 18px 50px rgba(0,0,0,0.18);
 }
 .account-list {
@@ -1783,6 +1871,54 @@ button { -webkit-tap-highlight-color:transparent; }
 ::-webkit-scrollbar-track { background:transparent; }
 ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
 
+
+/* ── Drag-and-drop highlight ──────────────────────────────────────────── */
+.att-box { position:relative; transition:background 0.15s ease, border-color 0.15s ease; }
+.att-box.is-dragging {
+  background:var(--accent-bg);
+  outline:2px dashed var(--accent);
+  outline-offset:6px;
+  border-radius:12px;
+}
+.att-drop-hint {
+  position:absolute; inset:0; display:none;
+  align-items:center; justify-content:center;
+  border-radius:12px; pointer-events:none; z-index:5;
+  color:var(--accent); font-size:13px; font-weight:600; letter-spacing:0.02em;
+  background:color-mix(in srgb, var(--surface) 70%, transparent);
+  backdrop-filter:blur(2px);
+}
+.att-box.is-dragging .att-drop-hint { display:flex; }
+
+/* ── Add-link button ──────────────────────────────────────────────────── */
+.attach-link {
+  height:42px; border-radius:999px; flex-shrink:0;
+  border:1px solid var(--border); background:var(--input-bg); color:var(--muted);
+  display:flex; align-items:center; justify-content:center; cursor:pointer;
+  transition:all 0.16s ease; font-weight:500;
+  gap:8px; padding:0 14px; font-size:13px;
+}
+.attach-link:hover {
+  border-color:var(--accent); color:var(--accent); background:var(--accent-bg);
+  transform:translateY(-1px);
+}
+.attach-link span { line-height:1; }
+
+/* ── Inline link styling (note bodies, comments) ──────────────────────── */
+.note-link {
+  color:var(--accent); text-decoration:underline; text-underline-offset:2px;
+  text-decoration-thickness:1px; word-break:break-word;
+}
+.note-link:hover { filter:brightness(1.1); }
+
+/* ── "Example" indicator on template cards ───────────────────────────── */
+.example-pill {
+  display:inline-flex; align-items:center; gap:5px;
+  padding:3px 9px; border-radius:999px;
+  font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase;
+  color:var(--muted); background:var(--sh); border:1px solid var(--border);
+}
+
 @media (max-width:860px) {
   .feed-controls { grid-template-columns:1fr; gap:12px; }
   .feed-filter-wrap { order:-1; justify-self:stretch; width:100%; }
@@ -1810,7 +1946,7 @@ button { -webkit-tap-highlight-color:transparent; }
   }
   .date-scrim {
     display:block; position:absolute; inset:0;
-    background:rgba(14,14,19,0.50); backdrop-filter:blur(9px);
+    background:var(--modal-bg); backdrop-filter:blur(9px);
   }
   .date-popover { position:relative; z-index:1; width:min(100%,324px); }
   .att-actions { align-items:flex-start; }
@@ -2152,10 +2288,11 @@ export default function App() {
     ...template,
     id: `template:${i}`,
     attachments: [],
-    author: identity?.name || "BrandBoard",
-    authorId: identity?.id || "brandboard",
-    authorEmail: identity?.email || "",
-    authorColor: identity?.color || "var(--accent)",
+    // Templates are listed as examples — no creator attached.
+    author: null,
+    authorId: null,
+    authorEmail: "",
+    authorColor: null,
     createdAt: new Date(2026, 4, 1, 9, i).toISOString(),
     isTemplate: true,
     comments: templateComments[`template:${i}`] || [],
@@ -2171,7 +2308,7 @@ export default function App() {
   };
 
   if (loading) return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#0e0e13", color: "rgba(255,255,255,0.38)", fontFamily: MONO, fontSize: 12 }}>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "var(--bg)", color: "var(--dim)", fontFamily: MONO, fontSize: 12 }}>
       Loading…
     </div>
   );
