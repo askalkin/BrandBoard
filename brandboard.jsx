@@ -117,6 +117,8 @@ function makeAnonIdentity() {
   return { id: gid(), name: `User·${code}`, color };
 }
 const normalizeEmail = email => (email || "").trim().toLowerCase();
+// Domain check — used only to validate identities already stored in localStorage.
+// All new sign-ins go through Google OAuth (api/auth.js) which verifies real accounts.
 const isAltyEmail = email => /^[^\s@]+@alty\.co$/i.test(normalizeEmail(email));
 function nameFromEmail(email) {
   const local = normalizeEmail(email).split("@")[0] || "team";
@@ -131,6 +133,12 @@ function makeTeamIdentity(email) {
   let hash = 0;
   for (let i = 0; i < clean.length; i++) hash = (hash + clean.charCodeAt(i) * (i + 1)) % AV_COLORS.length;
   return { id: `alty:${clean}`, email: clean, name: nameFromEmail(clean), color: AV_COLORS[hash] };
+}
+function makeGoogleIdentity({ email, name }) {
+  const clean = normalizeEmail(email);
+  let hash = 0;
+  for (let i = 0; i < clean.length; i++) hash = (hash + clean.charCodeAt(i) * (i + 1)) % AV_COLORS.length;
+  return { id: `alty:${clean}`, email: clean, name: name || nameFromEmail(clean), color: AV_COLORS[hash] };
 }
 const isValidIdentity = identity => identity?.email && isAltyEmail(identity.email);
 function mergeAccounts(...lists) {
@@ -1088,24 +1096,56 @@ function NotifBanner({ onDismiss, onEnable }) {
 }
 
 function LoginModal({ onLogin, mode = "signin", onBack }) {
-  const [email, setEmail] = useState("");
   const [error, setError] = useState("");
-  const inputRef = useRef(null);
-  useEffect(() => { inputRef.current?.focus(); }, []);
+  const [busy, setBusy] = useState(false);
+  const btnRef = useRef(null);
   const isAdding = mode === "add";
-  const submit = e => {
-    e?.preventDefault();
-    const clean = normalizeEmail(email);
-    if (!isAltyEmail(clean)) {
-      setError("Enter an @alty.co email.");
-      return;
-    }
+
+  useEffect(() => {
+    const init = () => {
+      window.google.accounts.id.initialize({
+        client_id: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+        hd: "alty.co",
+        callback: handleCredential,
+      });
+      window.google.accounts.id.renderButton(btnRef.current, {
+        theme: "outline",
+        size: "large",
+        width: 280,
+        text: isAdding ? "signin_with" : "signin_with",
+      });
+    };
+    if (window.google?.accounts) { init(); return; }
+    const script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    script.defer = true;
+    script.onload = init;
+    document.head.appendChild(script);
+  }, []);
+
+  const handleCredential = async ({ credential }) => {
+    setBusy(true);
     setError("");
-    onLogin(makeTeamIdentity(clean));
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ credential }),
+      });
+      const data = await res.json();
+      if (!data.ok) { setError(data.error || "Sign-in failed."); return; }
+      onLogin(makeGoogleIdentity(data));
+    } catch {
+      setError("Network error. Please try again.");
+    } finally {
+      setBusy(false);
+    }
   };
+
   return (
     <div className="m-overlay">
-      <form className="m-box login-box" onSubmit={submit}>
+      <div className="m-box login-box">
         <div className="login-head">
           {isAdding && (
             <button className="login-back" onClick={onBack} type="button" aria-label="Back">
@@ -1119,21 +1159,14 @@ function LoginModal({ onLogin, mode = "signin", onBack }) {
         </div>
         <div className="login-copy">
           <strong>{isAdding ? "Add another account" : "Sign in to your board"}</strong>
-          <span>{isAdding ? "Sign in with another Alty email, then choose the active account from the profile menu." : "Collect the useful signal while it is still fresh."}</span>
+          <span>{isAdding ? "Sign in with another Alty account." : "Collect the useful signal while it is still fresh."}</span>
         </div>
-        <input
-          ref={inputRef}
-          className="m-in login-input"
-          type="email"
-          inputMode="email"
-          autoComplete="email"
-          placeholder="name@alty.co"
-          value={email}
-          onChange={e => { setEmail(e.target.value); setError(""); }}
-        />
-        {error && <p className="login-error">{error}</p>}
-        <button className="btn-p login-submit" type="submit">Sign In</button>
-      </form>
+        <div className="login-google-wrap">
+          <div ref={btnRef} />
+          {busy && <p className="login-verifying">Verifying…</p>}
+          {error && <p className="login-error">{error}</p>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1880,12 +1913,12 @@ button { -webkit-tap-highlight-color:transparent; }
 .login-copy span {
   color:var(--muted); font-size:14px; line-height:1.5;
 }
-.login-input { text-align:left; margin-bottom:10px; }
+.login-google-wrap { display:flex; flex-direction:column; align-items:center; gap:10px; padding-top:4px; }
+.login-verifying { font-size:13px; color:var(--muted); margin:0; }
 .login-error {
-  color:#ff5c5c; font-size:12px;
-  line-height:1.5; margin:0 0 10px;
+  color:#ff5c5c; font-size:12px; text-align:center;
+  line-height:1.5; margin:0;
 }
-.login-submit { justify-content:center; width:100%; }
 
 .account-wrap { position:relative; }
 .account-menu {
