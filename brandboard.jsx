@@ -228,6 +228,50 @@ const db = {
   async set(k, v)  { try { await window.storage.set(`bb-${k}`,   JSON.stringify(v), false); } catch {} },
 };
 
+// ─── Cloud sync (Vercel Blob via /api/notes) ─────────────────────────────────
+// Falls back silently to local-only mode when the API is unreachable or the
+// Blob store is not yet provisioned, so dev / offline keeps working.
+const SYNC_URL = "/api/notes";
+const cloud = {
+  async fetchAll() {
+    try {
+      const r = await fetch(SYNC_URL, { cache: "no-store" });
+      if (!r.ok) return null;
+      const data = await r.json();
+      return Array.isArray(data?.notes) ? data.notes : null;
+    } catch { return null; }
+  },
+  async upsert(note) {
+    if (!note || note.isPrivate) return false;
+    try {
+      const r = await fetch(SYNC_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note }),
+      });
+      return r.ok;
+    } catch { return false; }
+  },
+  async remove(id) {
+    if (!id) return false;
+    try {
+      const r = await fetch(`${SYNC_URL}?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+      return r.ok;
+    } catch { return false; }
+  },
+};
+function mergeWithRemote(localAll, remotePublic) {
+  if (!remotePublic) return localAll; // cloud unavailable — keep local view
+  const localPrivate = (localAll || []).filter(n => n.isPrivate);
+  const byId = new Map();
+  remotePublic.forEach(n => byId.set(n.id, n));
+  // Preserve own public notes that haven't reached the cloud yet (pending sync)
+  (localAll || []).filter(n => !n.isPrivate && !byId.has(n.id)).forEach(n => byId.set(n.id, n));
+  const merged = [...localPrivate, ...byId.values()];
+  merged.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  return merged;
+}
+
 // ─── TagPill ──────────────────────────────────────────────────────────────────
 function TagPill({ tag, sm }) {
   if (!tag) return null;
@@ -243,14 +287,14 @@ function TagPill({ tag, sm }) {
   );
 }
 
-function AttachmentStrip({ attachments }) {
+function AttachmentStrip({ attachments, onImageOpen }) {
   const list = attachments || [];
   if (!list.length) return null;
   const images = list.filter(a => a.type === "image");
   const voices = list.filter(a => a.type === "voice");
   return (
     <div className="att-strip" onClick={e => e.stopPropagation()}>
-      <ImageCollage images={images} />
+      <ImageCollage images={images} onOpen={onImageOpen} />
       {voices.map(a => (
         <span key={a.id} className="att-pill" title={a.transcript || a.name}>
           <Microphone size={12} weight="bold" />
@@ -261,31 +305,38 @@ function AttachmentStrip({ attachments }) {
   );
 }
 
-function ImageCollage({ images, detail = false }) {
+function ImageCollage({ images, detail = false, onOpen }) {
   const list = (images || []).slice(0, 10);
   if (!list.length) return null;
   const visible = list.slice(0, Math.min(list.length, 5));
   const extra = list.length - visible.length;
+  const open = (e, i) => { e.stopPropagation(); onOpen?.(list, i); };
+  const Cell = onOpen ? "button" : "div";
   return (
     <div className={`img-collage count-${Math.min(list.length, 5)}${detail ? " detail" : ""}`}>
       {visible.map((image, i) => (
-        <div className="img-cell" key={image.id || image.name || i}>
+        <Cell
+          {...(onOpen ? { type: "button", onClick: e => open(e, i), "aria-label": `Open image ${i + 1}` } : {})}
+          className="img-cell"
+          key={image.id || image.name || i}
+          style={onOpen ? { cursor: "zoom-in" } : undefined}
+        >
           <img src={image.dataUrl} alt={image.name || "Idea attachment"} />
           {extra > 0 && i === visible.length - 1 && <span className="img-extra">+{extra}</span>}
-        </div>
+        </Cell>
       ))}
     </div>
   );
 }
 
-function AttachmentDetailList({ attachments }) {
+function AttachmentDetailList({ attachments, onImageOpen }) {
   const list = attachments || [];
   if (!list.length) return null;
   const images = list.filter(a => a.type === "image");
   const voices = list.filter(a => a.type === "voice");
   return (
     <div className="att-detail-list">
-      <ImageCollage images={images} detail />
+      <ImageCollage images={images} detail onOpen={onImageOpen} />
       {voices.map(a => (
         <div key={a.id} className="att-detail">
           <div className="att-voice">
@@ -386,6 +437,7 @@ function StarterTemplates({
   onDeleteRequest,
   onDeleteConfirm,
   onDeleteCancel,
+  onImageOpen,
 }) {
   return (
     <div className="template-board">
@@ -413,6 +465,7 @@ function StarterTemplates({
             onDeleteRequest={() => onDeleteRequest(template.id)}
             onDeleteConfirm={onDeleteConfirm}
             onDeleteCancel={onDeleteCancel}
+            onImageOpen={onImageOpen}
           />
         ))}
       </div>
@@ -421,7 +474,7 @@ function StarterTemplates({
 }
 
 // ─── NoteCard ─────────────────────────────────────────────────────────────────
-function NoteCard({ note, isRead, isOwn, isLiked, likeCount, isDeleting, onClick, onComment, onLike, onEdit, onDeleteRequest, onDeleteConfirm, onDeleteCancel, idx }) {
+function NoteCard({ note, isRead, isOwn, isLiked, likeCount, isDeleting, onClick, onComment, onLike, onEdit, onDeleteRequest, onDeleteConfirm, onDeleteCancel, onImageOpen, idx }) {
   const [hov, setHov] = useState(false);
   const unread = !isRead && !isOwn;
   const comments = note.comments || [];
@@ -512,7 +565,9 @@ function NoteCard({ note, isRead, isOwn, isLiked, likeCount, isDeleting, onClick
         }}><Linkify text={note.body} /></p>
       )}
 
-      <AttachmentStrip attachments={note.attachments} />
+      <div className="note-fill">
+        <AttachmentStrip attachments={note.attachments} onImageOpen={onImageOpen} />
+      </div>
       <CommentSummary comments={comments} />
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "auto" }}>
@@ -525,7 +580,7 @@ function NoteCard({ note, isRead, isOwn, isLiked, likeCount, isDeleting, onClick
               background: note.authorColor || "var(--accent)",
               display: "flex", alignItems: "center", justifyContent: "center",
               fontSize: 8, fontWeight: 700, color: "#0e0e13",
-              fontFamily: MONO, flexShrink: 0,
+              fontFamily: MONO, flexShrink: 0, lineHeight: 1, textAlign: "center",
             }}>{note.author?.charAt(0).toUpperCase()}</div>
             <span style={{ fontFamily: MONO, fontSize: 11, color: "var(--muted)", fontWeight: 500 }}>{note.author}</span>
             <span style={{ fontFamily: MONO, fontSize: 10, color: "var(--dim)" }}>· {ago(note.createdAt)}</span>
@@ -905,7 +960,7 @@ function NewNoteModal({ onClose, onSave, identity, initialNote, mode = "create" 
 }
 
 // ─── Idea detail page + comments ──────────────────────────────────────────────
-function IdeaDetailPage({ note, isOwn, isLiked, likeCount, onBack, onLike, onAddComment, onEdit, onDeleteRequest }) {
+function IdeaDetailPage({ note, isOwn, isLiked, likeCount, onBack, onLike, onAddComment, onEdit, onDeleteRequest, onImageOpen }) {
   const [comment, setComment] = useState("");
   const submitComment = e => {
     e.preventDefault();
@@ -940,7 +995,7 @@ function IdeaDetailPage({ note, isOwn, isLiked, likeCount, onBack, onLike, onAdd
           <TagPill tag={note.tag || "Other"} sm />
         </div>
         {note.body && <p className="idea-page-body"><Linkify text={note.body} /></p>}
-        <AttachmentDetailList attachments={note.attachments} />
+        <AttachmentDetailList attachments={note.attachments} onImageOpen={onImageOpen} />
         <div className="idea-page-meta">
           {note.isTemplate ? (
             <span className="example-pill" title="Example idea — no author">Example idea</span>
@@ -1400,6 +1455,7 @@ button { -webkit-tap-highlight-color:transparent; }
 .user-avatar {
   border-radius:8px; color:#0e0e13; display:inline-flex; align-items:center; justify-content:center;
   font-weight:700; flex-shrink:0; border:1px solid color-mix(in srgb,var(--border) 68%,transparent);
+  line-height:1; text-align:center; padding:0; font-family:inherit;
 }
 .card-tools {
   position:absolute; top:10px; right:10px; z-index:3;
@@ -1455,8 +1511,8 @@ button { -webkit-tap-highlight-color:transparent; }
 }
 .back-btn:hover { color:var(--text); }
 .idea-page-card {
-  background:var(--surface); border:1px solid var(--border); border-radius:14px;
-  padding:26px; box-shadow:none;
+  background:transparent; border:0; border-radius:0;
+  padding:0; box-shadow:none;
 }
 .idea-page-topline {
   display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:16px;
@@ -1872,6 +1928,58 @@ button { -webkit-tap-highlight-color:transparent; }
 ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
 
 
+
+/* ── Card empty-space filler (image collage stretches to bottom) ─────────── */
+.note-fill {
+  flex:1; min-height:0;
+  display:flex; flex-direction:column; gap:8px;
+  margin:4px 0 14px;
+}
+.note-fill .att-strip { flex:1; min-height:0; margin:0; }
+.note-fill .img-collage { flex:1; min-height:0; aspect-ratio:auto; height:100%; }
+button.img-cell { border:0; padding:0; background:var(--sh); appearance:none; font:inherit; color:inherit; }
+button.img-cell:focus-visible { outline:2px solid var(--accent); outline-offset:2px; z-index:2; }
+
+/* ── Lightbox ────────────────────────────────────────────────────────────── */
+.lightbox {
+  position:fixed; inset:0; z-index:300;
+  background:rgba(7,7,11,0.86); backdrop-filter:blur(8px);
+  display:flex; align-items:center; justify-content:center;
+  padding:32px;
+  animation:lbIn 0.18s ease;
+}
+@keyframes lbIn { from { opacity:0 } to { opacity:1 } }
+.lightbox-stage {
+  position:relative; max-width:min(1200px, 92vw); max-height:88vh;
+  display:flex; flex-direction:column; align-items:center; gap:10px;
+  margin:0;
+}
+.lightbox-stage img {
+  max-width:100%; max-height:80vh; object-fit:contain;
+  border-radius:8px; box-shadow:0 24px 80px rgba(0,0,0,0.45);
+  background:#000;
+}
+.lightbox-stage figcaption {
+  display:flex; align-items:center; gap:14px; flex-wrap:wrap; justify-content:center;
+  color:rgba(255,255,255,0.78); font-size:12px;
+}
+.lightbox-count { color:rgba(255,255,255,0.55); font-size:11px; }
+.lightbox-close,
+.lightbox-nav {
+  position:absolute; z-index:1; appearance:none;
+  background:rgba(255,255,255,0.10); border:1px solid rgba(255,255,255,0.18);
+  color:#fff; cursor:pointer;
+  border-radius:999px; display:flex; align-items:center; justify-content:center;
+  transition:background 0.15s, transform 0.15s;
+}
+.lightbox-close { top:18px; right:18px; width:38px; height:38px; }
+.lightbox-nav  { top:50%; transform:translateY(-50%); width:46px; height:46px; }
+.lightbox-nav.prev { left:18px; }
+.lightbox-nav.next { right:18px; }
+.lightbox-close:hover,
+.lightbox-nav:hover  { background:rgba(255,255,255,0.18); }
+.lightbox-nav:hover  { transform:translateY(-50%) scale(1.04); }
+
 /* ── Drag-and-drop highlight ──────────────────────────────────────────── */
 .att-box { position:relative; transition:background 0.15s ease, border-color 0.15s ease; }
 .att-box.is-dragging {
@@ -1955,7 +2063,7 @@ button { -webkit-tap-highlight-color:transparent; }
   .idea-footer { align-items:stretch; flex-direction:column; }
   .idea-footer .btn-p { width:100%; justify-content:center; }
   .idea-page { padding:4px 0 40px; }
-  .idea-page-card { padding:20px; border-radius:14px; }
+  .idea-page-card { padding:0; border-radius:0; }
   .idea-page-topline { flex-direction:column-reverse; align-items:flex-start; gap:12px; }
   .idea-page-topline h1 { font-size:24px; }
   .idea-page-meta { align-items:flex-start; flex-direction:column; }
@@ -1987,6 +2095,51 @@ function applyTheme(isDark) {
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
+
+// ─── Lightbox: fullscreen image preview with prev/next ───────────────────────
+function Lightbox({ images, index, onClose, onIndexChange }) {
+  const [i, setI] = useState(index || 0);
+  useEffect(() => { setI(index || 0); }, [index]);
+  useEffect(() => {
+    const onKey = e => {
+      if (e.key === "Escape") onClose?.();
+      else if (e.key === "ArrowLeft" && images.length > 1) setI(p => (p - 1 + images.length) % images.length);
+      else if (e.key === "ArrowRight" && images.length > 1) setI(p => (p + 1) % images.length);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [images.length, onClose]);
+  useEffect(() => { onIndexChange?.(i); }, [i]);
+  if (!images || !images.length) return null;
+  const img = images[i] || images[0];
+  return (
+    <div className="lightbox" onClick={onClose} role="dialog" aria-modal="true" aria-label="Image preview">
+      <button className="lightbox-close" onClick={e => { e.stopPropagation(); onClose?.(); }} aria-label="Close preview" type="button">
+        <X size={20} weight="bold" />
+      </button>
+      {images.length > 1 && (
+        <button className="lightbox-nav prev" onClick={e => { e.stopPropagation(); setI(p => (p - 1 + images.length) % images.length); }} aria-label="Previous image" type="button">
+          <CaretLeft size={28} weight="bold" />
+        </button>
+      )}
+      <figure className="lightbox-stage" onClick={e => e.stopPropagation()}>
+        <img src={img.dataUrl} alt={img.name || "Idea attachment"} />
+        {(img.name || images.length > 1) && (
+          <figcaption>
+            {img.name ? <span>{img.name}</span> : null}
+            {images.length > 1 ? <span className="lightbox-count">{i + 1} / {images.length}</span> : null}
+          </figcaption>
+        )}
+      </figure>
+      {images.length > 1 && (
+        <button className="lightbox-nav next" onClick={e => { e.stopPropagation(); setI(p => (p + 1) % images.length); }} aria-label="Next image" type="button">
+          <CaretRight size={28} weight="bold" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [identity, setIdentity]               = useState(null);
   const [accounts, setAccounts]               = useState([]);
@@ -2015,7 +2168,9 @@ export default function App() {
   const [showAccount, setShowAccount]          = useState(false);
   const [showNotifBanner, setShowNotifBanner] = useState(false);
   const [loading,  setLoading]                = useState(true);
+  const [lightbox, setLightbox]               = useState(null);
   const lastSeen = useRef(Date.now());
+  const openImage = useCallback((images, index = 0) => setLightbox({ images, index }), []);
 
   // Apply theme vars whenever isDark changes
   useEffect(() => { applyTheme(isDark); }, [isDark]);
@@ -2027,7 +2182,16 @@ export default function App() {
         db.notes(), db.get("id"), db.get("accounts"), db.get("theme-manual"),
         db.get("rids"), db.get("nb-dismissed"), db.likes(),
       ]);
-      setNotes(n || []);
+      // Show local cache instantly, then merge in shared (public) notes from cloud
+      const localBoot = n || [];
+      setNotes(localBoot);
+      cloud.fetchAll().then(remote => {
+        if (remote !== null) {
+          const merged = mergeWithRemote(localBoot, remote);
+          setNotes(merged);
+          db.sNotes(merged);
+        }
+      });
       setLikes(lk || {});
 
       const roster = mergeAccounts(savedAccounts, [id]);
@@ -2066,21 +2230,26 @@ export default function App() {
     return () => mq.removeEventListener("change", handler);
   }, []);
 
-  // Poll for new notes + likes every 30 s
+  // Poll for new public notes (cloud) + likes (local) every ~10 s.
+  // Cloud is the source of truth for non-private notes; private ideas stay local.
   useEffect(() => {
     if (!identity || loading) return;
     const iv = setInterval(async () => {
-      const [fresh, freshLikes] = await Promise.all([db.notes(), db.likes()]);
-      const nw = fresh.filter(n =>
+      const [remote, freshLikes, localNow] = await Promise.all([
+        cloud.fetchAll(), db.likes(), db.notes(),
+      ]);
+      const merged = mergeWithRemote(localNow, remote);
+      const nw = merged.filter(n =>
         !n.isPrivate && new Date(n.createdAt).getTime() > lastSeen.current && n.authorId !== identity.id
       );
       if (nw.length && notif === "granted") {
         nw.forEach(n => { try { new Notification("💡 New brand idea!", { body: `${n.author}: ${n.title}` }); } catch {} });
       }
       lastSeen.current = Date.now();
-      setNotes(fresh);
+      setNotes(merged);
+      db.sNotes(merged);
       setLikes(freshLikes || {});
-    }, 30000);
+    }, 10000);
     return () => clearInterval(iv);
   }, [identity, notif, loading]);
 
@@ -2131,6 +2300,7 @@ export default function App() {
     const up = [n, ...notes];
     setNotes(up);
     await db.sNotes(up);
+    if (!n.isPrivate) cloud.upsert(n);
     markRead(n.id);
     setShowNew(false);
     setTemplateDraft(null);
@@ -2142,11 +2312,21 @@ export default function App() {
       title: nextNote.title || "Untitled",
       tag: nextNote.tag || "Other",
     };
+    const prev = notes.find(n => n.id === normalized.id);
     const up = notes.map(n => n.id === normalized.id ? { ...n, ...normalized, updatedAt: new Date().toISOString() } : n);
     setNotes(up);
     await db.sNotes(up);
+    const next = up.find(n => n.id === normalized.id);
+    if (next) {
+      if (!next.isPrivate) {
+        cloud.upsert(next);
+      } else if (prev && !prev.isPrivate) {
+        // changed from public → private: pull it down from the cloud
+        cloud.remove(next.id);
+      }
+    }
     setEditingNote(null);
-    setExpanded(prev => prev?.id === normalized.id ? up.find(n => n.id === normalized.id) : prev);
+    setExpanded(p => p?.id === normalized.id ? next : p);
   };
 
   const handleAddComment = async (noteId, body) => {
@@ -2168,8 +2348,10 @@ export default function App() {
     const up = notes.map(n => n.id === noteId ? { ...n, comments: [...(n.comments || []), comment] } : n);
     setNotes(up);
     await db.sNotes(up);
-    setExpanded(prev => prev?.id === noteId ? up.find(n => n.id === noteId) : prev);
-    setCommentingNote(prev => prev?.id === noteId ? up.find(n => n.id === noteId) : prev);
+    const updated = up.find(n => n.id === noteId);
+    if (updated && !updated.isPrivate) cloud.upsert(updated);
+    setExpanded(p => p?.id === noteId ? updated : p);
+    setCommentingNote(p => p?.id === noteId ? updated : p);
   };
 
   // Delete note
@@ -2181,9 +2363,11 @@ export default function App() {
       if (editingNote?.id === deletingId) setEditingNote(null);
       return;
     }
+    const target = notes.find(n => n.id === deletingId);
     const up = notes.filter(n => n.id !== deletingId);
     setNotes(up);
     await db.sNotes(up);
+    if (target && !target.isPrivate) cloud.remove(target.id);
     setDeletingId(null);
     if (editingNote?.id === deletingId) setEditingNote(null);
     if (expanded?.id === deletingId) setExpanded(null);
@@ -2441,6 +2625,7 @@ export default function App() {
             onAddComment={body => handleAddComment(expandedNote.id, body)}
             onEdit={() => { setEditingNote(expandedNote); setExpanded(null); }}
             onDeleteRequest={() => { setDeletingId(expandedNote.id); setExpanded(null); }}
+            onImageOpen={openImage}
           />
         ) : (
           <>
@@ -2543,6 +2728,7 @@ export default function App() {
               onDeleteRequest={setDeletingId}
               onDeleteConfirm={handleDeleteConfirm}
               onDeleteCancel={() => setDeletingId(null)}
+              onImageOpen={openImage}
             />
           ) : (
             <>
@@ -2636,6 +2822,7 @@ export default function App() {
                       onDeleteRequest={() => setDeletingId(n.id)}
                       onDeleteConfirm={handleDeleteConfirm}
                       onDeleteCancel={() => setDeletingId(null)}
+                      onImageOpen={openImage}
                     />
                   ))}
                 </div>
@@ -2647,6 +2834,7 @@ export default function App() {
         )}
       </div>
 
+      {lightbox && <Lightbox images={lightbox.images} index={lightbox.index} onClose={() => setLightbox(null)} />}
       {!expandedNote && (
         <button className="fab" onClick={() => openNewIdea()}>
           <span>New idea</span>
