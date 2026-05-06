@@ -1203,12 +1203,10 @@ function AccountMenu({ identity, accounts, onAdd, onSwitch, onSignOut }) {
         <UserPlus size={16} />
         Add another account
       </button>
-      {hasMultiple && (
-        <button className="account-action muted" type="button" onClick={onSignOut}>
-          <SignOut size={16} />
-          Sign out of this account
-        </button>
-      )}
+      <button className="account-action muted" type="button" onClick={onSignOut}>
+        <SignOut size={16} />
+        Sign out
+      </button>
     </div>
   );
 }
