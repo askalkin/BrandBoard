@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cache-Control" content="no-store, max-age=0" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <title>Brandboard</title>
+    <script>
+      window.storage = window.storage || {
+        async get(key) {
+          const value = localStorage.getItem(key);
+          return value === null ? null : { key, value };
+        },
+        async set(key, value) {
+          localStorage.setItem(key, value);
+        },
+      };
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="./brandboard-app-20260505-2252.js"></script>
+  </body>
+</html>
